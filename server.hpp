@@ -21,7 +21,7 @@
 
 #define CONNEXION_PORT 8080
 #define MAX_QUEUE_SIZE 10
-#define CLIENT_MSG_BUFFER_SIZE 50
+#define CLIENT_MSG_BUFFER_SIZE 5
 #define MAX_EPOLL_EVENTS_TO_HANDLE_AT_ONCE 64
 
 typedef struct sockaddr_in sockaddr_in_t;
@@ -36,7 +36,6 @@ void    ft_memset(void *b, int c, size_t len)
     while (i < len)
         ptr[i++] = (char)c;
 }
-
 
 /*
     Server that recieves client messages and sends them back to the other clients.
@@ -84,7 +83,7 @@ class Server
         //start listening for clients connexion requests
         if (listen(listen_socket_fd, MAX_QUEUE_SIZE) == -1)
             throw ServerException("failed to listen the connexion socket: ");
-        printf("listening...\n");
+        std::cout << "listening..." << std::endl;
     }
     void create_epoll_instance()
     {
@@ -111,7 +110,7 @@ class Server
             throw ServerException("failed to add new client connexion to epoll instance, error: ");
         client_messages_fds.push_back(data_exchage_epoll_event.data.fd);
         //debugging
-        std::cout << "Accepted new connexion, data_exchage_epoll_event.data.fd = " << data_exchage_epoll_event.data.fd << std::endl;
+        std::cout << "Accepted new connexion, scoket_fd = " << data_exchage_epoll_event.data.fd << std::endl;
     }
     void close_connexion(int client_message_socket_fd)
     {
@@ -124,29 +123,43 @@ class Server
         client_messages_fds.erase(iterator_in_opened_fds);
         std::cout << "Closed connections with client." << std::endl;
     }
-    void handle_client_message(int client_message_socket_fd)
+    void sendall(int s, const char *buf, int len)
     {
-        //check for cariage return(\r\n), not just \n
-        if ((std::string)"stop\r\n" == (std::string)client_msg_buffer)
+        int nb_bytes_sent_in_total = 0; // how many bytes we've sent
+        int bytesleft = len;            // how many we have left to send
+        int n;
+
+        while(nb_bytes_sent_in_total < len)
+        {
+            if ((n = send(s, buf + nb_bytes_sent_in_total, bytesleft, MSG_DONTWAIT)) == -1 && errno != EWOULDBLOCK && errno != EAGAIN) 
+                throw ServerException("failed to send client message: ");
+            nb_bytes_sent_in_total += n;
+            bytesleft -= n;
+        }
+    }
+    void handle_client_message(int client_message_socket_fd, std::string client_msg)
+    {
+        std::cout << "client message: " << client_msg ;
+        //check for "cariage return"(\r\n), not just \n
+        if (client_msg == "stop\r\n")
             throw ClientMessageStopException();
-        std::cout << "message from client: " << client_msg_buffer;
         for (size_t i = 0; i < client_messages_fds.size(); i++)
             if (client_messages_fds[i] != client_message_socket_fd)
-                if (send(client_messages_fds[i], client_msg_buffer, strlen(client_msg_buffer), 0) == -1)
-                    throw ServerException("failed to send client message to other clients: ");
+                sendall(client_messages_fds[i], client_msg.data(), client_msg.length());
     }
     void read_client_message(int client_message_socket_fd)
     {
         ssize_t read_bytes;
-        read_bytes = recv(client_message_socket_fd, client_msg_buffer, CLIENT_MSG_BUFFER_SIZE, 0);
-        if (read_bytes == -1 && EAGAIN != errno && EWOULDBLOCK != errno)
-            throw ServerException("failed to read client message: ");
-        client_msg_buffer[read_bytes] = 0;
+        std::string client_msg;
+        while ((read_bytes = recv(client_message_socket_fd, client_msg_buffer, CLIENT_MSG_BUFFER_SIZE, MSG_DONTWAIT)) > 0)
+            client_msg.append(client_msg_buffer, read_bytes);
+        if (read_bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
+                throw ServerException("failed to read client message: ");
         //if connexion was closed by client, close socket_fd, delete from epoll instance's interest list and erase it from client_messages_fds
-        if (read_bytes == 0)
+        if (client_msg.length() == 0)
             close_connexion(client_message_socket_fd);
         else//read_bytes is neither -1 nor 0, which means that there is an actual message to broadcast.
-            handle_client_message(client_message_socket_fd);
+            handle_client_message(client_message_socket_fd, client_msg);
     }
     void wait_for_events()
     {
@@ -155,8 +168,7 @@ class Server
             throw ServerException("failed to wait for epoll events: ");
         for (int i = 0; i < nb_events; i++)
         {
-            int fd = events_buffer[i].data.fd;
-            if (fd == listen_socket_fd)
+            if (events_buffer[i].data.fd == listen_socket_fd)
                 accept_new_connexion();
             else
                 read_client_message(events_buffer[i].data.fd);
