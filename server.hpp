@@ -21,7 +21,7 @@
 
 #define CONNEXION_PORT 8080
 #define MAX_QUEUE_SIZE 10
-#define CLIENT_MSG_BUFFER_SIZE 1000
+#define CLIENT_MSG_BUFFER_SIZE 50
 #define MAX_EPOLL_EVENTS_TO_HANDLE_AT_ONCE 64
 
 typedef struct sockaddr_in sockaddr_in_t;
@@ -48,9 +48,14 @@ class Server
     //fields
     std::vector<int> client_messages_fds;   //vector of opened file descriptors needed to close them once Server gets deleted
     int listen_socket_fd, epoll_fd;         //listen socket and epoll file descriptors have them own variables even though they could be stored in client_messages_fds for easier access
-    epoll_event *events_buffer;
+    epoll_event events_buffer[MAX_EPOLL_EVENTS_TO_HANDLE_AT_ONCE];
     char client_msg_buffer[CLIENT_MSG_BUFFER_SIZE + 1];
-    //mested classes
+    //nested classes
+    /*
+        This class is thrwon to break the epoll_wait loop.
+        This is way more convinient than having many return BREAK_EPOLL_WAIT_LOOP and then as many if (BREAK_EPOLL_WAIT_LOOP).
+        Instead we just warp around the epool_wait loop into a try catch(ClientMessageStopException).
+    */
     class ClientMessageStopException {};
 
     //methods
@@ -119,17 +124,10 @@ class Server
         client_messages_fds.erase(iterator_in_opened_fds);
         std::cout << "Closed connections with client." << std::endl;
     }
-    int my_strcmp(const char *str1, const char *str2)
-    {
-        int i = 0;
-        while (str2[i] && str1[i] && str1[i] == str2[i])
-            i++;
-        return str1[i] - str2[i];
-    }
     void handle_client_message(int client_message_socket_fd)
     {
-        //check for cariage return, not just \n
-        if (!my_strcmp("stop\r\n", client_msg_buffer))
+        //check for cariage return(\r\n), not just \n
+        if ((std::string)"stop\r\n" == (std::string)client_msg_buffer)
             throw ClientMessageStopException();
         std::cout << "message from client: " << client_msg_buffer;
         for (size_t i = 0; i < client_messages_fds.size(); i++)
@@ -166,7 +164,7 @@ class Server
     }
 
     public:
-    Server() : client_messages_fds(), listen_socket_fd(-1), epoll_fd(-1), events_buffer(new epoll_event[MAX_EPOLL_EVENTS_TO_HANDLE_AT_ONCE]) { }
+    Server() : client_messages_fds(), listen_socket_fd(-1), epoll_fd(-1) { }
     void Run()
     {
         setup_connexion_queue(CONNEXION_PORT);
@@ -189,7 +187,6 @@ class Server
             close(listen_socket_fd);
         for (size_t i = 0; i < client_messages_fds.size(); i++)
             close(client_messages_fds[i]);
-        delete[] events_buffer;
     }
 
     class ServerException : public std::exception
