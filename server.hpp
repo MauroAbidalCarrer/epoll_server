@@ -96,7 +96,7 @@ class Server
             throw ServerException("epoll_ctl raised an error: ");
         std::cout << "Created epoll instance." << std::endl;
     }
-    //Accepts new connexion, adds the new socket file descriptor to the open_fds vector and the epoll instance interset list.
+    //Accepts new connexion, adds the new socket file descriptor to both the open_fds vector and the epoll instance interset list.
     void accept_new_connexion()
     {
         //accept new socket_fd
@@ -109,7 +109,7 @@ class Server
         if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, data_exchage_epoll_event.data.fd, &data_exchage_epoll_event) == -1)
             throw ServerException("failed to add new client connexion to epoll instance, error: ");
         client_messages_fds.push_back(data_exchage_epoll_event.data.fd);
-        //debugging
+        //log action
         std::cout << "Accepted new connexion, scoket_fd = " << data_exchage_epoll_event.data.fd << std::endl;
     }
     void close_connexion(int client_message_socket_fd)
@@ -121,6 +121,7 @@ class Server
             throw ServerException("failed to close client_message_socket_fd: ");
         std::vector<int>::iterator iterator_in_opened_fds = find(client_messages_fds.begin(), client_messages_fds.end(), client_message_socket_fd);
         client_messages_fds.erase(iterator_in_opened_fds);
+        //log action
         std::cout << "Closed connections with client." << std::endl;
     }
     void sendall(int s, const char *buf, int len)
@@ -139,22 +140,30 @@ class Server
     }
     void handle_client_message(int client_message_socket_fd, std::string client_msg)
     {
+        //log action
         std::cout << "client message: " << client_msg ;
-        //check for "cariage return"(\r\n), not just \n
+        //Check for "cariage return"(\r\n), not just \n.
         if (client_msg == "stop\r\n")
             throw ClientMessageStopException();
+        //Write message on each sockect in the client_messages_fds vector, except the one that we read from. 
         for (size_t i = 0; i < client_messages_fds.size(); i++)
             if (client_messages_fds[i] != client_message_socket_fd)
                 sendall(client_messages_fds[i], client_msg.data(), client_msg.length());
     }
-    void read_client_message(int client_message_socket_fd)
+    std::string recv_all(int client_message_socket_fd)
     {
         ssize_t read_bytes;
         std::string client_msg;
+        //Keep on reading until the recv call would be blocking (i.e until we have read the full message).
         while ((read_bytes = recv(client_message_socket_fd, client_msg_buffer, CLIENT_MSG_BUFFER_SIZE, MSG_DONTWAIT)) > 0)
             client_msg.append(client_msg_buffer, read_bytes);
         if (read_bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
-                throw ServerException("failed to read client message: ");
+            throw ServerException("failed to read client message: ");
+        return client_msg;
+    }
+    void read_client_message(int client_message_socket_fd)
+    {
+        std::string client_msg = recv_all(client_message_socket_fd);
         //if connexion was closed by client, close socket_fd, delete from epoll instance's interest list and erase it from client_messages_fds
         if (client_msg.length() == 0)
             close_connexion(client_message_socket_fd);
